@@ -27,6 +27,16 @@ func main() {
 		log.Fatalf("Invalid DELAY value '%s': %v", delayStr, err)
 	}
 
+	maxRowsStr := os.Getenv("MAX_ROWS")
+	var maxRows int
+	if maxRowsStr != "" {
+		var err error
+		maxRows, err = strconv.Atoi(maxRowsStr)
+		if err != nil {
+			log.Fatalf("Invalid MAX_ROWS value '%s': %v", maxRowsStr, err)
+		}
+	}
+
 	// Open the database
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -47,6 +57,9 @@ func main() {
 	}
 
 	fmt.Printf("Writer started.\nDatabase: %s\nDelay: %dms\nRow size: ~1KB\n", dbPath, delay)
+	if maxRows > 0 {
+		fmt.Printf("Max rows: %d\n", maxRows)
+	}
 
 	// Prepare 1KB payload
 	payload := make([]byte, 1024)
@@ -65,6 +78,14 @@ func main() {
 			continue
 		}
 		count++
+
+		if maxRows > 0 {
+			_, err = db.Exec("DELETE FROM test_rows WHERE id NOT IN (SELECT id FROM test_rows ORDER BY id DESC LIMIT ?)", maxRows)
+			if err != nil {
+				log.Printf("Error pruning rows: %v", err)
+			}
+		}
+
 		if count%10 == 0 || delay >= 1000 {
 			fmt.Printf("[%s] Inserted row #%d\n", time.Now().Format("15:04:05.000"), count)
 		}
