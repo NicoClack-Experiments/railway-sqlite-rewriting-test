@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -37,12 +39,15 @@ func main() {
 		}
 	}
 
+	// Set up graceful shutdown (SIGINT + SIGTERM on Unix; SIGINT on Windows).
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
 	// Open the database
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
 
 	// Ensure the table exists
 	_, err = db.Exec(`
@@ -71,23 +76,32 @@ func main() {
 	defer ticker.Stop()
 
 	var count int64
-	for range ticker.C {
-		_, err := db.Exec("INSERT INTO test_rows (payload) VALUES (?)", payload)
-		if err != nil {
-			log.Printf("Error inserting row: %v", err)
-			continue
-		}
-		count++
+	for {
+		select {
+		case <-quit:
+			log.Println("Shutdown signal received. Closing database...")
+			db.Close()
+			log.Println("Database closed. Exiting.")
+			return
 
-		if maxRows > 0 {
-			_, err = db.Exec("DELETE FROM test_rows WHERE id NOT IN (SELECT id FROM test_rows ORDER BY id DESC LIMIT ?)", maxRows)
+		case <-ticker.C:
+			_, err := db.Exec("INSERT INTO test_rows (payload) VALUES (?)", payload)
 			if err != nil {
-				log.Printf("Error pruning rows: %v", err)
+				log.Printf("Error inserting row: %v", err)
+				continue
 			}
-		}
+			count++
 
-		if count%10 == 0 || delay >= 1000 {
-			fmt.Printf("[%s] Inserted row #%d\n", time.Now().Format("15:04:05.000"), count)
+			if maxRows > 0 {
+				_, err = db.Exec("DELETE FROM test_rows WHERE id NOT IN (SELECT id FROM test_rows ORDER BY id DESC LIMIT ?)", maxRows)
+				if err != nil {
+					log.Printf("Error pruning rows: %v", err)
+				}
+			}
+
+			if count%10 == 0 || delay >= 1000 {
+				fmt.Printf("[%s] Inserted row #%d\n", time.Now().Format("15:04:05.000"), count)
+			}
 		}
 	}
 }
