@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -12,6 +13,26 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+	return out.Close()
+}
 
 func main() {
 	dbPath := os.Getenv("DATABASE_PATH")
@@ -39,6 +60,8 @@ func main() {
 		}
 	}
 
+	useTempFS := os.Getenv("USE_TEMP_FS") == "true"
+
 	// Set up graceful shutdown (SIGINT + SIGTERM on Unix; SIGINT on Windows).
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
@@ -61,7 +84,14 @@ func main() {
 		log.Fatalf("Failed to initialize schema: %v", err)
 	}
 
+	if useTempFS {
+		db.Close()
+	}
+
 	fmt.Printf("Writer started.\nDatabase: %s\nDelay: %dms\nRow size: ~1KB\n", dbPath, delay)
+	if useTempFS {
+		fmt.Printf("Mode: Temp file rewrite\n")
+	}
 	if maxRows > 0 {
 		fmt.Printf("Max rows: %d\n", maxRows)
 	}
@@ -80,22 +110,52 @@ func main() {
 		select {
 		case <-quit:
 			log.Println("Shutdown signal received. Closing database...")
-			db.Close()
+			if !useTempFS {
+				db.Close()
+			}
 			log.Println("Database closed. Exiting.")
 			return
 
 		case <-ticker.C:
-			_, err := db.Exec("INSERT INTO test_rows (payload) VALUES (?)", payload)
+			var targetDB *sql.DB
+			var currentPath string
+			if useTempFS {
+				currentPath = dbPath + ".tmp"
+				if err := copyFile(dbPath, currentPath); err != nil {
+					log.Printf("Error copying to temp: %v", err)
+					continue
+				}
+				tdb, err := sql.Open("sqlite", currentPath)
+				if err != nil {
+					log.Printf("Error opening temp db: %v", err)
+					continue
+				}
+				targetDB = tdb
+			} else {
+				targetDB = db
+			}
+
+			_, err := targetDB.Exec("INSERT INTO test_rows (payload) VALUES (?)", payload)
 			if err != nil {
 				log.Printf("Error inserting row: %v", err)
+				if useTempFS {
+					targetDB.Close()
+				}
 				continue
 			}
 			count++
 
 			if maxRows > 0 {
-				_, err = db.Exec("DELETE FROM test_rows WHERE id NOT IN (SELECT id FROM test_rows ORDER BY id DESC LIMIT ?)", maxRows)
+				_, err = targetDB.Exec("DELETE FROM test_rows WHERE id NOT IN (SELECT id FROM test_rows ORDER BY id DESC LIMIT ?)", maxRows)
 				if err != nil {
 					log.Printf("Error pruning rows: %v", err)
+				}
+			}
+
+			if useTempFS {
+				targetDB.Close()
+				if err := os.Rename(currentPath, dbPath); err != nil {
+					log.Printf("Error renaming temp to original: %v", err)
 				}
 			}
 
