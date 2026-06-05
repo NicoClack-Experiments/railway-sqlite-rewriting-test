@@ -17,11 +17,13 @@ RUN go build -o main .
 FROM debian:bookworm-slim
 
 # Install extra dependencies for ZFS inspection and general debugging.
-# zfsutils-linux provides zpool and zfs commands.
 # procps provides ps and top.
 # iproute2 provides ip command.
 # curl is useful for general troubleshooting.
-RUN apt-get update && apt-get install -y \
+# We enable contrib and non-free for zfsutils-linux availability in some Debian versions,
+# or use standard tools if zfsutils-linux is restricted.
+RUN sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list.d/debian.sources && \
+	apt-get update && apt-get install -y \
 	zfsutils-linux \
 	procps \
 	iproute2 \
