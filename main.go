@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -61,6 +62,17 @@ func main() {
 	}
 
 	useTempFS := os.Getenv("USE_TEMP_FS") == "true"
+	var tempDir string
+	if useTempFS {
+		var err error
+		// os.MkdirTemp uses the directory returned by os.TempDir().
+		// On Linux (Railway), you can set TMPDIR=/dev/shm for a true in-memory filesystem.
+		tempDir, err = os.MkdirTemp("", "sqlite-mem-")
+		if err != nil {
+			log.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
+	}
 
 	// Set up graceful shutdown (SIGINT + SIGTERM on Unix; SIGINT on Windows).
 	quit := make(chan os.Signal, 1)
@@ -120,7 +132,7 @@ func main() {
 			var targetDB *sql.DB
 			var currentPath string
 			if useTempFS {
-				currentPath = dbPath + ".tmp"
+				currentPath = filepath.Join(tempDir, filepath.Base(dbPath))
 				if err := copyFile(dbPath, currentPath); err != nil {
 					log.Printf("Error copying to temp: %v", err)
 					continue
@@ -154,7 +166,11 @@ func main() {
 
 			if useTempFS {
 				targetDB.Close()
-				if err := os.Rename(currentPath, dbPath); err != nil {
+				// Copy back to a temporary file on the same volume as the target, then rename for atomicity
+				diskTemp := dbPath + ".swap"
+				if err := copyFile(currentPath, diskTemp); err != nil {
+					log.Printf("Error copying back to disk: %v", err)
+				} else if err := os.Rename(diskTemp, dbPath); err != nil {
 					log.Printf("Error renaming temp to original: %v", err)
 				}
 			}
