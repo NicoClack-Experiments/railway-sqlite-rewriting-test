@@ -20,8 +20,7 @@ FROM debian:bookworm-slim
 # procps provides ps and top.
 # iproute2 provides ip command.
 # curl is useful for general troubleshooting.
-# We enable contrib and non-free for zfsutils-linux availability in some Debian versions,
-# or use standard tools if zfsutils-linux is restricted.
+# We enable contrib and non-free for zfsutils-linux availability in some Debian versions.
 RUN sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list.d/debian.sources && \
 	apt-get update && apt-get install -y \
 	zfsutils-linux \
@@ -30,6 +29,17 @@ RUN sed -i 's/main/main contrib non-free/g' /etc/apt/sources.list.d/debian.sourc
 	curl \
 	lsb-release \
 	&& rm -rf /var/lib/apt/lists/*
+
+# Create a helper script to initialize the ZFS device node.
+# ZFS tools require /dev/zfs to exist. We try to create it if it's missing.
+RUN echo '#!/bin/sh\n\
+	if [ ! -c /dev/zfs ]; then\n\
+	mknod /dev/zfs c 10 249 2>/dev/null\n\
+	fi\n\
+	exec "$@"' > /usr/local/bin/zfs-init && chmod +x /usr/local/bin/zfs-init
+
+# Automatically try to create the device node when SSH-ing in via bash
+RUN echo 'zfs-init >/dev/null 2>&1' >> /etc/bash.bashrc
 
 WORKDIR /app
 
