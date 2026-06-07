@@ -35,6 +35,19 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
+func applyPragmas(db *sql.DB, wal bool, pageSize int) {
+	if pageSize > 0 {
+		if _, err := db.Exec(fmt.Sprintf("PRAGMA page_size = %d", pageSize)); err != nil {
+			log.Printf("Warning: Failed to set page_size: %v", err)
+		}
+	}
+	if wal {
+		if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+			log.Printf("Warning: Failed to set journal_mode = WAL: %v", err)
+		}
+	}
+}
+
 func main() {
 	dbPath := os.Getenv("DATABASE_PATH")
 	if dbPath == "" {
@@ -74,6 +87,17 @@ func main() {
 		defer os.RemoveAll(tempDir)
 	}
 
+	sqliteWAL := os.Getenv("SQLITE_WAL") == "true"
+	pageSizeStr := os.Getenv("SQLITE_PAGE_SIZE")
+	var sqlitePageSize int
+	if pageSizeStr != "" {
+		var err error
+		sqlitePageSize, err = strconv.Atoi(pageSizeStr)
+		if err != nil {
+			log.Fatalf("Invalid SQLITE_PAGE_SIZE value '%s': %v", pageSizeStr, err)
+		}
+	}
+
 	// Set up graceful shutdown (SIGINT + SIGTERM on Unix; SIGINT on Windows).
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
@@ -83,6 +107,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
+	applyPragmas(db, sqliteWAL, sqlitePageSize)
 
 	// Ensure the table exists
 	_, err = db.Exec(`
@@ -103,6 +128,12 @@ func main() {
 	fmt.Printf("Writer started.\nDatabase: %s\nDelay: %dms\nRow size: ~1KB\n", dbPath, delay)
 	if useTempFS {
 		fmt.Printf("Mode: Temp file rewrite\n")
+	}
+	if sqliteWAL {
+		fmt.Printf("WAL: Enabled\n")
+	}
+	if sqlitePageSize > 0 {
+		fmt.Printf("Page Size: %d\n", sqlitePageSize)
 	}
 	if maxRows > 0 {
 		fmt.Printf("Max rows: %d\n", maxRows)
@@ -142,6 +173,7 @@ func main() {
 					log.Printf("Error opening temp db: %v", err)
 					continue
 				}
+				applyPragmas(tdb, sqliteWAL, sqlitePageSize)
 				targetDB = tdb
 			} else {
 				targetDB = db
